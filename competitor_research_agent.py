@@ -45,6 +45,37 @@ def save_note(competitor_name, competitor_type, aspects_data, notes):
     }
     return f"Note saved for '{competitor_name}'"
 
+def propose_competitor_list(competitors, notes):
+    competitor_list = list(competitors) if isinstance(competitors, list) else [competitors]
+
+    while True:
+        print(f"\n{'='*60}")
+        print(f"  [APPROVAL GATE 1] Agent identified these competitors:\n")
+        for i, c in enumerate(competitor_list, 1):
+            print(f"    {i}. {c}")
+        print(f"\n  Commands: press Enter to approve | 'add [name]' | 'remove [name]'")
+        print(f"{'='*60}")
+
+        user_input = input("\n  Your decision: ").strip().lower()
+
+        if not user_input:
+            print(f"\n  [gate 1] Approved. Proceeding to research {len(competitor_list)} competitors.\n")
+            return f"Competitor list approved: {json.dumps(competitor_list)}. Now research each one."
+        elif user_input.startswith("add "):
+            name = user_input[4:].strip().title()
+            competitor_list.append(name)
+            print(f"  Added: {name}")
+        elif user_input.startswith("remove "):
+            name = user_input[7:].strip().lower()
+            before = len(competitor_list)
+            competitor_list = [c for c in competitor_list if c.lower() != name]
+            if len(competitor_list) < before:
+                print(f"  Removed: {name.title()}")
+            else:
+                print(f"  Not found: {name.title()}")
+        else:
+            print("  Type 'add [name]', 'remove [name]', or press Enter to approve.")
+
 
 # --- TOOL DEFINITIONS FOR CLAUDE ---
 
@@ -75,6 +106,21 @@ tools = [
                 }
             },
             "required": ["url"]
+        }
+    },
+    {
+        "name": "propose_competitor_list",
+        "description": "After your first search, call this to propose the competitor list to the user for approval before starting research. The user can add or remove competitors. You MUST call this before researching any individual competitor.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "competitors": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "The list of competitor names you identified from your initial search."
+                }
+            },
+            "required": ["competitors"]
         }
     },
     {
@@ -110,6 +156,8 @@ def run_tool(name, inputs, notes):
         return search_web(inputs["query"], notes)
     elif name == "extract_page_content":
         return extract_page_content(inputs["url"], notes)
+    elif name == "propose_competitor_list":
+        return propose_competitor_list(inputs["competitors"], notes)
     elif name == "save_note":
         return save_note(
             inputs["competitor_name"],
@@ -324,6 +372,21 @@ def add_landscape_table(doc, notes, aspects, company):
     doc.add_paragraph("")
 
 
+def show_research_summary_and_confirm(notes, aspects):
+    print(f"\n{'='*60}")
+    print(f"  [APPROVAL GATE 2] Research complete. Here's what was found:\n")
+    for name, data in notes.items():
+        print(f"  {name}")
+        print(f"  Type: {data.get('type', '')}")
+        for aspect, value in data.get("aspects", {}).items():
+            short = value.split(".")[0][:120]
+            print(f"    • {aspect}: {short}")
+        print()
+    print(f"{'='*60}")
+    decision = input("\n  Generate Word document? (yes/no): ").strip().lower()
+    return decision in ("yes", "y")
+
+
 def save_report(notes, company, aspects):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"report_{company.replace(' ', '_')}_{timestamp}.docx"
@@ -439,14 +502,15 @@ Your goal is to identify and research the key competitors to {company}.
 CURRENT STATE (scratchpad — always read this first):
 {scratchpad}
 
-RESEARCH PROCESS — ONE COMPETITOR AT A TIME:
+RESEARCH PROCESS — FOLLOW EXACTLY IN ORDER:
 1. Do ONE broad search to identify the key competitors to {company}
-2. For each competitor: search for it, read ONE page, then immediately save a note using save_note
-3. Repeat until all key competitors are researched and saved
-4. Output a brief final summary and stop
+2. Call propose_competitor_list with the competitors you found — WAIT for user approval before proceeding
+3. For each approved competitor: search for it, read ONE page, then immediately save a note using save_note
+4. Repeat until all approved competitors are researched and saved
+5. Output a brief final summary and stop
 
 CRITICAL RULES:
-- Decide yourself how many competitors are truly relevant
+- You MUST call propose_competitor_list after step 1 before researching any individual competitor
 - SAVE A NOTE after every single competitor before moving to the next one
 - Do NOT read more than 1 page per competitor
 - Maximum {max_iterations} iterations total
@@ -483,7 +547,10 @@ CRITICAL RULES:
         print(f"\n=== AGENT STOPPED: hit max {max_iterations} iterations ===")
 
     if notes:
-        save_report(notes, company, aspects)
+        if show_research_summary_and_confirm(notes, aspects):
+            save_report(notes, company, aspects)
+        else:
+            print("\n  [gate 2] Word document skipped. Research notes are preserved in memory.")
 
     return notes
 
