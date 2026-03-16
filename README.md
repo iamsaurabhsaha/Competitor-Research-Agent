@@ -12,9 +12,9 @@ Every product manager, founder, and strategist needs to understand their competi
 
 ### Enter the Competitor Research Agent
 
-This agent does what a good research analyst does: it goes to the live web, reads real pages, takes structured notes on your specific questions, scores the quality of its own work, and stops only when the research is thorough enough. The output is a formatted Word document — ready to share with your team, drop into a deck, or use as a briefing doc.
+This agent does what a good research analyst does: it goes to the live web, reads real pages, and takes structured notes on your specific questions. But unlike a fully autonomous agent, it pauses at two key moments — to let you approve the competitor list before research begins, and to show you a quality-scored summary before generating the report. If you're not satisfied, you can send it back to research more.
 
-You define what matters. The agent does the work.
+You stay in control. The agent does the work.
 
 ---
 
