@@ -148,7 +148,7 @@ echo "ANTHROPIC_API_KEY=your-key-here" > .env
 ## Run It
 
 ```bash
-python3 ebay_competitor_agent.py
+python3 competitor_research_agent.py
 ```
 
 You will be prompted for:
