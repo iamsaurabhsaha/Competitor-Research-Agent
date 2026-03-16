@@ -73,6 +73,29 @@ The **quality checker** is a separate Claude API call that reviews all saved not
 
 ---
 
+## Context Window Management
+
+Long research runs can accumulate thousands of tokens of conversation history. Without management, the agent would eventually hit Claude's context limit and fail mid-run. This agent uses **three strategies in parallel** to prevent that:
+
+**Strategy 1 — Conversation Summarization**
+Every 3 iterations, the full conversation history is compressed into a concise bullet-point summary by a separate Claude call. The summary replaces the raw history, keeping the active context small while preserving all meaningful progress.
+
+**Strategy 2 — Selective Tool Result Archiving**
+Tool results (web page content, search results) are the biggest contributors to context bloat. Only the **last 3 tool results** are kept in active memory. Older results are automatically archived to `context_archive.jsonl` on disk — not lost, just moved out of the active window.
+
+**Strategy 3 — Scratchpad Injection**
+Instead of relying on Claude to "remember" context from earlier in the conversation, the agent maintains an explicit scratchpad — a live JSON snapshot of the current research state (which competitors have been saved, which aspects are required, how many are done). This scratchpad is injected into every single Claude call so the agent always knows exactly where it is, regardless of how much history was trimmed.
+
+| Strategy | What it solves | When it runs |
+|---|---|---|
+| Summarization | Conversation history growing too long | Every 3 iterations |
+| Tool result archiving | Page content flooding the context | Every iteration |
+| Scratchpad injection | Agent losing track of progress | Every iteration |
+
+Together these let the agent run reliably for 20–30 iterations without hitting context limits.
+
+---
+
 ## Example Run
 
 ```
