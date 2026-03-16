@@ -45,7 +45,7 @@ def save_note(competitor_name, competitor_type, aspects_data, notes):
     }
     return f"Note saved for '{competitor_name}'"
 
-def propose_competitor_list(competitors, notes):
+def propose_competitor_list(competitors, notes, approved_competitors):
     competitor_list = list(competitors) if isinstance(competitors, list) else [competitors]
 
     while True:
@@ -59,10 +59,11 @@ def propose_competitor_list(competitors, notes):
         user_input = input("\n  Your decision: ").strip().lower()
 
         if not user_input:
-            print(f"\n  [gate 1] Approved. Proceeding to research {len(competitor_list)} competitors.\n")
-            return f"Competitor list approved: {json.dumps(competitor_list)}. Now research each one."
+            approved_competitors.extend(competitor_list)
+            print(f"\n  [gate 1] Approved. Proceeding to research all {len(competitor_list)} competitors.\n")
+            return f"Competitor list approved: {json.dumps(competitor_list)}. Research ALL of them — do not stop early."
         elif user_input.startswith("add "):
-            name = user_input[4:].strip().title()
+            name = user_input[4:].strip().strip("[]()").title()
             competitor_list.append(name)
             print(f"  Added: {name}")
         elif user_input.startswith("remove "):
@@ -151,13 +152,13 @@ tools = [
 
 # --- TOOL EXECUTOR ---
 
-def run_tool(name, inputs, notes):
+def run_tool(name, inputs, notes, approved_competitors):
     if name == "search_web":
         return search_web(inputs["query"], notes)
     elif name == "extract_page_content":
         return extract_page_content(inputs["url"], notes)
     elif name == "propose_competitor_list":
-        return propose_competitor_list(inputs["competitors"], notes)
+        return propose_competitor_list(inputs["competitors"], notes, approved_competitors)
     elif name == "save_note":
         return save_note(
             inputs["competitor_name"],
@@ -279,8 +280,14 @@ def trim_tool_results(messages, keep_last=3, archive_file="context_archive.jsonl
         for idx in to_archive:
             f.write(json.dumps(messages[idx]) + "\n")
 
-    # Remove archived messages from active context
+    # Remove tool_result messages AND their preceding tool_use (assistant) messages.
+    # The API requires every tool_use to have a matching tool_result immediately after.
+    # Removing tool_results without removing their tool_use blocks causes a 400 error.
     indices_to_remove = set(to_archive)
+    for idx in to_archive:
+        if idx > 0 and messages[idx - 1].get("role") == "assistant":
+            indices_to_remove.add(idx - 1)
+
     trimmed = [m for i, m in enumerate(messages) if i not in indices_to_remove]
 
     archived_count = len(to_archive)
@@ -295,17 +302,20 @@ def trim_tool_results(messages, keep_last=3, archive_file="context_archive.jsonl
 # This is injected into every prompt so Claude always knows current state
 # without relying on long conversation history.
 
-def build_scratchpad(notes, aspects, company):
+def build_scratchpad(notes, aspects, company, approved_competitors, stall_warning=False):
     researched = list(notes.keys())
-    pending = f"Still researching — waiting for more competitors" if not researched else ""
+    pending = [c for c in approved_competitors if c not in notes]
 
     scratchpad = {
         "company_being_researched": company,
         "aspects_required": aspects,
+        "approved_competitors": approved_competitors,
         "competitors_researched": researched,
-        "competitors_count": len(researched),
-        "status": "in_progress" if len(researched) < 3 else "nearing_completion"
+        "competitors_pending": pending,
+        "progress": f"{len(researched)} of {len(approved_competitors)} done" if approved_competitors else "awaiting competitor list approval"
     }
+    if stall_warning:
+        scratchpad["URGENT"] = "No notes saved in 5+ iterations. Stop searching immediately. Call save_note NOW using data already gathered. Do not make any more search or extract calls until a note is saved."
     return json.dumps(scratchpad, indent=2)
 
 
@@ -372,7 +382,7 @@ def add_landscape_table(doc, notes, aspects, company):
     doc.add_paragraph("")
 
 
-def show_research_summary_and_confirm(notes, aspects):
+def show_research_summary_and_confirm(notes, aspects, quality, quality_threshold):
     print(f"\n{'='*60}")
     print(f"  [APPROVAL GATE 2] Research complete. Here's what was found:\n")
     for name, data in notes.items():
@@ -382,9 +392,27 @@ def show_research_summary_and_confirm(notes, aspects):
             short = value.split(".")[0][:120]
             print(f"    • {aspect}: {short}")
         print()
-    print(f"{'='*60}")
-    decision = input("\n  Generate Word document? (yes/no): ").strip().lower()
-    return decision in ("yes", "y")
+
+    if quality >= quality_threshold:
+        print(f"  Quality score: {quality}/100  (threshold: {quality_threshold}) — good to go")
+    else:
+        print(f"  Quality score: {quality}/100  Below threshold ({quality_threshold}) — some aspects may be incomplete")
+
+    print(f"\n{'='*60}")
+    print(f"  Options:")
+    print(f"    yes        -> generate Word document")
+    print(f"    no         -> exit without generating")
+    print(f"    [feedback] -> request more research (e.g. 'go deeper on Stripe pricing')")
+
+    decision = input("\n  Your decision: ").strip()
+    lower = decision.lower()
+
+    if lower in ("yes", "y"):
+        return "generate"
+    elif lower in ("no", "n"):
+        return "skip"
+    else:
+        return decision  # feedback string — triggers re-research
 
 
 def save_report(notes, company, aspects):
@@ -452,15 +480,18 @@ def get_user_inputs():
 
 # --- AGENTIC LOOP ---
 
-def run_agent(company, aspects, max_iterations=30, quality_threshold=95,
-              summarize_every=3, keep_tool_results=3):
+def run_agent(company, aspects, max_iterations=40, quality_threshold=95,
+              summarize_every=8, keep_tool_results=3):
     notes = {}
+    approved_competitors = []
     last_note_count = 0
+    stall_count = 0
+    stall_warning = False
     aspects_str = "\n".join(f"- {a}" for a in aspects)
     goal = f"Identify the key competitors to {company} and research each one covering these aspects:\n{aspects_str}"
 
     print(f"\nGoal: {goal}")
-    print(f"Max iterations: {max_iterations} | Quality threshold: {quality_threshold}")
+    print(f"Max iterations: {max_iterations} | Quality scoring: enabled (informational only)")
     print(f"Context: summarize every {summarize_every} iterations | keep last {keep_tool_results} tool results\n")
 
     messages = [{"role": "user", "content": goal}]
@@ -480,17 +511,29 @@ def run_agent(company, aspects, max_iterations=30, quality_threshold=95,
         # Quality check when new note saved
         if len(notes) > last_note_count:
             last_note_count = len(notes)
+            stall_count = 0
+            stall_warning = False
             quality = check_quality(notes, aspects)
-            print(f"\n  [quality check] Notes saved: {len(notes)} competitors | Score: {quality}/100")
-            if quality >= quality_threshold:
-                print(f"  [quality check] Quality threshold reached! Stopping and writing report.")
+            print(f"\n  [quality check] Notes saved: {len(notes)} of {len(approved_competitors)} competitors | Score: {quality}/100")
+
+            # Stop only when ALL approved competitors are researched
+            if approved_competitors and len(notes) >= len(approved_competitors):
+                print(f"  [complete] All {len(approved_competitors)} approved competitors researched. Writing report.")
                 messages.append({
                     "role": "user",
-                    "content": f"Quality threshold of {quality_threshold} reached. Stop researching. Output a brief final summary and stop."
+                    "content": "All approved competitors have been researched and saved. Output a brief final summary and stop."
                 })
+        else:
+            # Only count stall AFTER Gate 1 is approved — pre-Gate-1 iterations are normal setup
+            if approved_competitors:
+                stall_count += 1
+                if stall_count >= 5:
+                    stall_warning = True
+                    stall_count = 0
+                    print(f"\n  [stall detected] No notes saved in 5 iterations. Injecting warning into scratchpad.")
 
         # STRATEGY 3: Inject scratchpad into every Claude call
-        scratchpad = build_scratchpad(notes, aspects, company)
+        scratchpad = build_scratchpad(notes, aspects, company, approved_competitors, stall_warning)
 
         response = client.messages.create(
             model="claude-sonnet-4-6",
@@ -505,14 +548,18 @@ CURRENT STATE (scratchpad — always read this first):
 RESEARCH PROCESS — FOLLOW EXACTLY IN ORDER:
 1. Do ONE broad search to identify the key competitors to {company}
 2. Call propose_competitor_list with the competitors you found — WAIT for user approval before proceeding
-3. For each approved competitor: search for it, read ONE page, then immediately save a note using save_note
-4. Repeat until all approved competitors are researched and saved
-5. Output a brief final summary and stop
+3. Pick ONE competitor. Search for it. Extract ONE page. Call save_note immediately.
+4. Pick the NEXT competitor. Repeat step 3.
+5. Continue until all approved competitors are saved. Then output a brief summary and stop.
 
 CRITICAL RULES:
 - You MUST call propose_competitor_list after step 1 before researching any individual competitor
-- SAVE A NOTE after every single competitor before moving to the next one
-- Do NOT read more than 1 page per competitor
+- Research and save ONE competitor at a time — never search for multiple competitors in the same turn
+- After extracting one page, call save_note IMMEDIATELY — do not read more pages first
+- The only allowed pattern is: search → extract → save_note → next competitor
+- Do NOT search for a new competitor until the current one has a saved note
+- Research ALL competitors in the approved list — never stop early
+- Check competitors_pending in the scratchpad to see who still needs to be researched
 - Maximum {max_iterations} iterations total
 - When saving notes, populate aspects_data with ALL of these as keys:
 {aspects_str}
@@ -534,7 +581,7 @@ CRITICAL RULES:
             tool_results = []
             for block in response.content:
                 if block.type == "tool_use":
-                    result = run_tool(block.name, block.input, notes)
+                    result = run_tool(block.name, block.input, notes, approved_competitors)
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": block.id,
@@ -547,10 +594,76 @@ CRITICAL RULES:
         print(f"\n=== AGENT STOPPED: hit max {max_iterations} iterations ===")
 
     if notes:
-        if show_research_summary_and_confirm(notes, aspects):
-            save_report(notes, company, aspects)
-        else:
-            print("\n  [gate 2] Word document skipped. Research notes are preserved in memory.")
+        final_quality = check_quality(notes, aspects)
+
+        while True:
+            decision = show_research_summary_and_confirm(notes, aspects, final_quality, quality_threshold)
+
+            if decision == "generate":
+                save_report(notes, company, aspects)
+                break
+
+            elif decision == "skip":
+                print("\n  [gate 2] Word document skipped. Research notes preserved.")
+                break
+
+            else:
+                # User gave feedback — run more research beyond original limit
+                re_research_limit = 10
+                print(f"\n  [gate 2] Resuming research ({re_research_limit} additional iterations)...")
+                print(f"  Feedback: {decision}\n")
+
+                messages.append({
+                    "role": "user",
+                    "content": f"User reviewed the research and gave this feedback: '{decision}'. Do additional research to address it. Fill gaps, deepen shallow findings, or re-research any incomplete aspects. You have {re_research_limit} more iterations."
+                })
+
+                for extra_iter in range(re_research_limit):
+                    print(f"\n--- Re-research iteration {extra_iter + 1} of {re_research_limit} ---")
+
+                    messages = trim_tool_results(messages, keep_last=keep_tool_results)
+                    scratchpad = build_scratchpad(notes, aspects, company, approved_competitors, stall_warning=False)
+
+                    response = client.messages.create(
+                        model="claude-sonnet-4-6",
+                        max_tokens=4096,
+                        system=f"""You are a market research agent doing additional research based on user feedback.
+
+CURRENT STATE (scratchpad):
+{scratchpad}
+
+User feedback: {decision}
+
+Address the feedback. You may search for more detail, extract additional pages, or update existing notes using save_note (overwriting is fine).
+When done, output a brief summary and stop.
+
+Aspects required:
+{aspects_str}""",
+                        tools=tools,
+                        messages=messages
+                    )
+
+                    if response.stop_reason == "end_turn":
+                        for block in response.content:
+                            if hasattr(block, "text"):
+                                print(f"\n{block.text}")
+                        break
+
+                    if response.stop_reason == "tool_use":
+                        messages.append({"role": "assistant", "content": response.content})
+                        tool_results = []
+                        for block in response.content:
+                            if block.type == "tool_use":
+                                result = run_tool(block.name, block.input, notes, approved_competitors)
+                                tool_results.append({
+                                    "type": "tool_result",
+                                    "tool_use_id": block.id,
+                                    "content": str(result)
+                                })
+                        messages.append({"role": "user", "content": tool_results})
+
+                # Recompute quality after extra research, show Gate 2 again
+                final_quality = check_quality(notes, aspects)
 
     return notes
 
