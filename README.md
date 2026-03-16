@@ -167,6 +167,7 @@ That's it. The agent handles everything else.
 | Layer | Technology |
 |---|---|
 | AI reasoning | Anthropic Claude (claude-sonnet-4-6) via Messages API |
+| AI coding assistant | Anthropic Claude (claude-sonnet-4-6) |
 | Web search | DuckDuckGo via `ddgs` — no account or API key required |
 | Page extraction | `requests` + `BeautifulSoup4` |
 | Report generation | `python-docx` — formatted Word document |
