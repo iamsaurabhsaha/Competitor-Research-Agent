@@ -325,7 +325,3 @@ At Anthropic's current pricing, **$5 in credits = 25–100 full research runs.**
 ## Disclaimer
 
 This software is provided as-is, without warranty of any kind. It is a research tool, not a professional intelligence service. Research quality depends on what is publicly available on the web at the time of the run. Web search results and page content can be incomplete, outdated, or occasionally inaccurate — always verify critical findings before making business decisions. Each user is responsible for their own Anthropic API usage and costs.
-
----
-
-*Built as part of a 5-phase AI builder learning roadmap — from Claude power user to multi-agent systems engineer.*
